@@ -1,4 +1,4 @@
-## 1. Tổng quan bài toán
+## Tổng quan bài toán
 
 - Bài toán: Phân loại sự kiện Tidal Disruption Events (TDE) từ dữ liệu lightcurve mô phỏng LSST
 - Mục tiêu: Xác định chính xác các object là TDE (class hiếm) dựa trên các đặc trưng thống kê, vật lý và domain-specific được trích xuất từ chuỗi thời gian đa dải (u, g, r, i, z, y)
@@ -8,7 +8,7 @@
   - Dữ liệu nhiều nhiễu, thiếu, số lượng điểm quan sát không đồng đều
   - Số lượng feature lớn, nguy cơ overfitting cao
 
-## 2. Tiền xử lý
+## Tiền xử lý
 
 - Làm sạch dữ liệu:
   - Loại bỏ hoặc điền giá trị thiếu
@@ -24,44 +24,25 @@
 - Chia dữ liệu:
   - Sử dụng StratifiedKFold để chia train/validation đảm bảo phân phối nhãn
 
-## 2.1. Chi tiết Feature Engineering theo nhóm
+## Chi tiết Feature Engineering theo nhóm Feature
 
 Các nhóm đặc trưng chính được xây dựng cho mỗi object (và cho từng band: u, g, r, i, z, y):
 
-- Nhóm đặc trưng thống kê cơ bản:
+- Nhóm đặc trưng thống kê cơ bản: mean, std, max, min, median, skew, kurtosis, peak-to-peak, autocorr, count, outlier_count, zero_crossings, n_peaks, n_troughs, fwhm, asymmetry,...
 
-  - mean, std, max, min, median, skew, kurtosis, peak-to-peak, autocorr, count, outlier_count, zero_crossings, n_peaks, n_troughs, fwhm, asymmetry,...
-  - Áp dụng cho từng band và toàn bộ object
+- Nhóm đặc trưng rolling/window: rolling mean, rolling std, rolling min/max, rolling median, rolling peak/trough, rolling zscore, rolling iqr, rolling mad, rolling range,... với nhiều window size khác nhau (5, 7, 9, 11)
 
-- Nhóm đặc trưng rolling/window:
+- Nhóm đặc trưng peak/trough: peak_time, peak_separation, double_peak, peak/trough count, peak/trough value, rise_time, decay_rate, decay_powerlaw_alpha,...
 
-  - rolling mean, rolling std, rolling min/max, rolling median, rolling peak/trough, rolling zscore, rolling iqr, rolling mad, rolling range,... với nhiều window size khác nhau (5, 7, 9, 11)
+- Nhóm đặc trưng phổ/tần số: fft_power_max, fft_power_sum, fft_power_mean, dominant_freq, log_variability, variability, amplitude, slope
 
-- Nhóm đặc trưng peak/trough:
+- Nhóm đặc trưng màu sắc và tỷ lệ: color_g_r_at_peak, color_r_i_at_peak, color_g_i_at_peak, color_gr_slope, color_gr_stability, color_ri_stability, color_gi_stability, color_u_minus_g_mean, color_change_rate_u_g, blue_fraction, ratio_r_g_flux_max, ratio_i_r_flux_mean, ratio_r_i_flux_median, các ratio/diff/sum/prod giữa các band (vd: band_r_vs_g_flux_sum_mean, band_z_vs_y_roll5_ratio_mean,...)
 
-  - peak_time, peak_separation, double_peak, peak/trough count, peak/trough value, rise_time, decay_rate, decay_powerlaw_alpha,...
+- Nhóm đặc trưng vật lý/fit: max*luminosity_band*_, mean*luminosity_band*_, min*abs_mag_band*_, mean*abs_mag_band*_, fit*error_powerlaw_band*\*, dist_to_galaxy_center
 
-- Nhóm đặc trưng phổ/tần số:
+- Nhóm đặc trưng entropy, robust, clipped: entropy, mad, iqr, trimmed_mean, robust_std, clipped_mean, clipped_std, clipped_min/max/skew/kurtosis,...
 
-  - fft_power_max, fft_power_sum, fft_power_mean, dominant_freq, log_variability, variability, amplitude, slope
-
-- Nhóm đặc trưng màu sắc và tỷ lệ:
-
-  - color_g_r_at_peak, color_r_i_at_peak, color_g_i_at_peak, color_gr_slope, color_gr_stability, color_ri_stability, color_gi_stability, color_u_minus_g_mean, color_change_rate_u_g, blue_fraction
-  - ratio_r_g_flux_max, ratio_i_r_flux_mean, ratio_r_i_flux_median, các ratio/diff/sum/prod giữa các band (vd: band_r_vs_g_flux_sum_mean, band_z_vs_y_roll5_ratio_mean,...)
-
-- Nhóm đặc trưng vật lý/fit:
-
-  - max*luminosity_band*_, mean*luminosity_band*_, min*abs_mag_band*_, mean*abs_mag_band*_, fit*error_powerlaw_band*\*, dist_to_galaxy_center
-
-- Nhóm đặc trưng entropy, robust, clipped:
-
-  - entropy, mad, iqr, trimmed_mean, robust_std, clipped_mean, clipped_std, clipped_min/max/skew/kurtosis,...
-
-- Loại bỏ feature:
-  - Các feature constant hoặc có tỷ lệ NaN cao sẽ bị loại bỏ sau khi sinh feature
-
-## 3. Lựa chọn mô hình
+## Lựa chọn mô hình
 
 - XGBoost (XGBClassifier):
   - Mạnh với dữ liệu tabular, tự động chọn feature, regularization tốt, hỗ trợ class imbalance
@@ -70,7 +51,7 @@ Các nhóm đặc trưng chính được xây dựng cho mỗi object (và cho t
 - Tiêu chí chọn:
   - F1-score trên validation/test, khả năng mở rộng, tốc độ huấn luyện
 
-## 4. Tối ưu mô hình
+## Tối ưu mô hình
 
 - Feature Selection:
   - Chọn top feature theo importance hoặc loại bỏ feature ít giá trị
@@ -84,3 +65,28 @@ Các nhóm đặc trưng chính được xây dựng cho mỗi object (và cho t
     - Tuning threshold để tối ưu F1 do dữ liệu imbalance nặng
 - Imbalance Handling:
   - Sử dụng scale_pos_weight của XGBoost hoặc oversampling
+
+## Hướng dẫn chạy
+
+- Tiền xử lý và sinh đặc trưng:
+  ```bash
+  python src/preprocess_all.py
+  python src/feature_engineering.py
+  ```
+
+- Huấn luyện mô hình (chưa tune tham số, dùng để xếp hạng feature):
+  ```bash
+  python src/train_full.py
+  ```
+
+- Tối ưu tham số(huấn luyện trên top-k feature, tham số sau khi tối ưu đã được hard code):
+  ```bash
+  python src/tune_xgb.py
+  ```
+
+- Dự đoán trên tập test và tạo file submission:
+  ```bash
+  python src/predict_on_test.py
+  ```
+
+
