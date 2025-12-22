@@ -1,0 +1,40 @@
+# Ignore Python cache and environment
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+venv/
+
+# Ignore data and model outputs
+/data/
+/models/
+*.csv
+*.tsv
+*.xlsx
+*.h5
+*.pkl
+
+# Ignore notebook checkpoints
+.ipynb_checkpoints/
+
+# Ignore VSCode settings
+.vscode/
+
+# Ignore logs
+*.log
+
+# Ignore temporary files
+*.tmp
+*.bak
+~$*
+
+# Ignore test output
+/test_output/
+
+# Ignore large feature files
+features/*.csv
+
+# Ignore split folders
+features/split_*/
+data/split_*/
