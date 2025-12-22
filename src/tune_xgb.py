@@ -13,11 +13,11 @@ except ImportError:
     Pipeline = None
 import joblib
 
-feat_imp_path = 'features/feature_importance.csv'
+feat_imp_path = 'features/feature_importance.csv' #tde_core_features.csv 
 feat_imp = pd.read_csv(feat_imp_path)
 
 # chỉ dùng top features
-top_feats = feat_imp.sort_values('importance', ascending=False)['feature'].head(45).tolist()
+top_feats = feat_imp.sort_values('importance', ascending=False)['feature'].head(1000).tolist()
 
 features_path = 'features/full_train_features_labeled.csv'
 df = pd.read_csv(features_path)
@@ -33,16 +33,20 @@ USE_OVERSAMPLE = False
 
 n_positive = np.sum(y == 1)
 n_negative = np.sum(y == 0)
-scale_pos_weight = n_negative / n_positive
+if USE_OVERSAMPLE:
+    scale_pos_weight = 1
+else:
+    scale_pos_weight = n_negative / n_positive
+    print("scale pos weight: ", scale_pos_weight)
 
 # tham số đã tối ưu trên tập test(không tối ưu theo f1 trên tập train vì có dấu hiệu overfit)
 param_grid = {
-    'max_depth': [5],
-    'min_child_weight': [3],
-    'subsample': [0.6],
-    'colsample_bytree': [0.6],
-    'learning_rate': [0.05],
-    'n_estimators': [150],
+    'max_depth': [3],
+    'min_child_weight': [6],
+    'subsample': [0.65],
+    'colsample_bytree': [0.65],
+    'learning_rate': [0.03],
+    'n_estimators': [650],
 }
 
 xgb = XGBClassifier(
@@ -85,7 +89,7 @@ print('Best params:', grid.best_params_)
 print('Best f1 (default threshold=0.5):', grid.best_score_)
 
 # Thêm threshold để tối ưu dự đoán nhãn hiếm (1)
-THRESHOLD = 0.25  
+THRESHOLD = 0.4
 model = grid.best_estimator_
 probs = model.predict_proba(X_filled)[:, 1]
 preds = (probs > THRESHOLD).astype(int)

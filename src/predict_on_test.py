@@ -21,8 +21,8 @@ def predict_on_test(model_path, test_features_path, output_path):
             feat_names = booster.feature_names
             X_filled = X_filled[feat_names]
     
-    THRESHOLD = 0.4  
-    
+    THRESHOLD = 0.45
+
     if hasattr(model, 'predict_proba'):
         probs = model.predict_proba(X_filled)[:, 1]
         y_pred = (probs > THRESHOLD).astype(int)
