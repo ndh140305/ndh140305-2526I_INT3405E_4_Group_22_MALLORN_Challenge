@@ -1,13 +1,21 @@
-
 import pandas as pd
 import numpy as np
 from sklearn.linear_model import LinearRegression
-
+import warnings
+warnings.filterwarnings('ignore', category=RuntimeWarning)
 
 def extract_features(df):
+    # Hàm chuyển đổi flux sang apparent magnitude
+    def flux_to_mag(flux):
+        return -2.5 * np.log10(np.maximum(flux, 1e-8))
+
+    def lum_dist(z):
+        c = 3e5  # km/s
+        h0 = 70  # km/s/Mpc
+        return (c / h0) * z
+
     # Chuẩn hóa tên cột: chữ thường, thay khoảng trắng bằng gạch dưới
     df = df.rename(columns=lambda x: x.strip().lower().replace(' ', '_'))
-
 
     #  Hiệu chỉnh bụi (de-extinction) cho flux
     #    Sử dụng EBV và hệ số hiệu chỉnh phổ (R_V = 3.1, A_lambda/A_V ~ 3.1 cho optical)
@@ -53,6 +61,56 @@ def extract_features(df):
             axis=1
         )
 
+    def safe(func, arr, default=0.0, *args, **kwargs):
+        try:
+            if arr is None or len(arr) == 0 or np.all(pd.isnull(arr)):
+                return default
+            val = func(arr, *args, **kwargs)
+            if isinstance(val, (float, int, np.floating, np.integer)):
+                if np.isnan(val) or np.isinf(val):
+                    return default
+            return val
+        except Exception:
+            return default
+
+    def safe_log(arr, default=0.0):
+        try:
+            arr = np.asarray(arr)
+            arr = arr[np.isfinite(arr)]
+            arr = arr[arr > 0]
+            if len(arr) == 0:
+                return default
+            val = np.log(arr)
+            val = val[np.isfinite(val)]
+            if len(val) == 0:
+                return default
+            return np.mean(val)
+        except Exception:
+            return default
+
+    def safe_percentile(arr, q, default=0.0):
+        try:
+            arr = np.asarray(arr)
+            arr = arr[np.isfinite(arr)]
+            if len(arr) == 0:
+                return default
+            return np.percentile(arr, q)
+        except Exception:
+            return default
+
+    def safe_rolling(series, window, func, default=0.0):
+        try:
+            if len(series) < window:
+                return default
+            roll = pd.Series(series).rolling(window)
+            vals = func(roll)
+            vals = vals[np.isfinite(vals)]
+            if len(vals) == 0:
+                return default
+            return np.mean(vals)
+        except Exception:
+            return default
+
     features = []
     object_ids = df['object_id'].unique()
     for object_id in object_ids:
@@ -71,6 +129,100 @@ def extract_features(df):
         else:
             feature['dist_to_galaxy_center'] = 0.0
 
+        # --- PHYSICS FEATURES ---
+        luminosity_stats = {}
+        fit_error_powerlaw = {}
+        for band in obj['filter'].unique():
+            band_df = obj[obj['filter'] == band]
+            # Đảm bảo times và vals cùng chiều dài, loại bỏ NaN đồng thời
+            band_df = band_df[['time_rest', 'flux']].dropna()
+            vals = band_df['flux'].values
+            times = band_df['time_rest'].values if 'time_rest' in band_df else None
+            z_val = obj['z'].iloc[0] if 'z' in obj.columns else 0.0
+            d_l = lum_dist(z_val) * 1e6 if z_val > 0 else 1.0  # pc
+            mags = flux_to_mag(vals)
+            abs_mags = mags - 5 * np.log10(np.maximum(d_l, 1)) + 5
+            if len(vals) > 0:
+                luminosity_stats[band] = {
+                    'max_lum': np.max(vals) * d_l**2,
+                    'mean_lum': np.mean(vals) * d_l**2,
+                    'min_abs_mag': np.min(abs_mags),
+                    'mean_abs_mag': np.mean(abs_mags)
+                }
+            # Fit powerlaw t^-5/3 cho từng band
+            if len(vals) > 4 and times is not None:
+                from scipy.signal import find_peaks
+                from scipy.optimize import curve_fit
+                peaks, _ = find_peaks(vals)
+                if len(peaks) > 0:
+                    t0 = times[peaks[0]]
+                    t_rel = times - t0 + 1e-6
+                    # mask sẽ luôn cùng chiều dài với vals và t_rel
+                    mask = (vals > 0) & (t_rel > 0)
+                    if np.sum(mask) > 4:
+                        def powerlaw(t, a):
+                            return a * (t) ** (-5/3)
+                        try:
+                            popt, _ = curve_fit(powerlaw, t_rel[mask], vals[mask], maxfev=5000)
+                            pred = powerlaw(t_rel[mask], popt[0])
+                            mse = np.mean((vals[mask] - pred) ** 2)
+                            fit_error_powerlaw[band] = mse
+                        except Exception:
+                            fit_error_powerlaw[band] = np.nan
+                    else:
+                        fit_error_powerlaw[band] = np.nan
+                else:
+                    fit_error_powerlaw[band] = np.nan
+            else:
+                fit_error_powerlaw[band] = np.nan
+
+        # Gán các feature absolute magnitude/luminosity cho từng band phổ biến
+        for band in ['u', 'g', 'r', 'i', 'z']:
+            stats = luminosity_stats.get(band, None)
+            if stats:
+                feature[f'max_luminosity_band_{band}'] = stats['max_lum']
+                feature[f'mean_luminosity_band_{band}'] = stats['mean_lum']
+                feature[f'min_abs_mag_band_{band}'] = stats['min_abs_mag']
+                feature[f'mean_abs_mag_band_{band}'] = stats['mean_abs_mag']
+            else:
+                feature[f'max_luminosity_band_{band}'] = 0.0
+                feature[f'mean_luminosity_band_{band}'] = 0.0
+                feature[f'min_abs_mag_band_{band}'] = 0.0
+                feature[f'mean_abs_mag_band_{band}'] = 0.0
+            # Fit error powerlaw
+            feature[f'fit_error_powerlaw_band_{band}'] = fit_error_powerlaw.get(band, np.nan)
+
+        # Color evolution: color_u_minus_g_mean, color_change_rate_u_g, blue_fraction
+        u_df = obj[obj['filter'] == 'u']
+        g_df = obj[obj['filter'] == 'g']
+        # Tính color_u_minus_g_mean
+        if len(u_df) > 0 and len(g_df) > 0:
+            merged = pd.merge(u_df[['time_rest', 'flux']], g_df[['time_rest', 'flux']], on='time_rest', suffixes=('_u', '_g'))
+            if len(merged) > 0:
+                feature['color_u_minus_g_mean'] = np.mean(merged['flux_u'] - merged['flux_g'])
+                # Fit độ dốc thay đổi màu sắc theo thời gian
+                try:
+                    lr = LinearRegression()
+                    lr.fit(merged[['time_rest']], merged['flux_u'] - merged['flux_g'])
+                    feature['color_change_rate_u_g'] = lr.coef_[0]
+                except Exception:
+                    feature['color_change_rate_u_g'] = 0.0
+            else:
+                feature['color_u_minus_g_mean'] = 0.0
+                feature['color_change_rate_u_g'] = 0.0
+        else:
+            feature['color_u_minus_g_mean'] = 0.0
+            feature['color_change_rate_u_g'] = 0.0
+        # Blue fraction: tổng năng lượng band u+g chia tổng năng lượng các band
+        total_flux = 0.0
+        blue_flux = 0.0
+        for band in obj['filter'].unique():
+            vals = obj[obj['filter'] == band]['flux'].dropna().values
+            total_flux += np.sum(vals)
+            if band in ['u', 'g']:
+                blue_flux += np.sum(vals)
+        feature['blue_fraction'] = blue_flux / (total_flux + 1e-8)
+
         # Per band features
         band_peak_times = {}
         for band in obj['filter'].unique():
@@ -78,8 +230,221 @@ def extract_features(df):
             prefix = f'band_{band}_'
             vals = band_df['flux'].dropna().reset_index(drop=True)
             times = band_df['time_(mjd)'].values if 'time_(mjd)' in band_df else None
+            # --- SPAM FEATURE BLOCK 2 ---
+            # Thống kê cao hơn
+            feature[prefix + 'flux_weighted_mean'] = np.average(vals, weights=np.arange(1, len(vals)+1)) if len(vals) > 0 else 0.0
+            feature[prefix + 'flux_harmonic_mean'] = len(vals)/(np.sum(1.0/(vals+1e-8))) if len(vals) > 0 else 0.0
+            feature[prefix + 'flux_geometric_mean'] = np.exp(np.mean(np.log(np.abs(vals)+1e-8))) if len(vals) > 0 else 0.0
+            feature[prefix + 'flux_trimmed_std'] = np.std(np.sort(vals)[int(0.1*len(vals)):int(0.9*len(vals))]) if len(vals) > 10 else 0.0
+            feature[prefix + 'flux_q5'] = np.percentile(vals, 5) if len(vals) > 0 else 0.0
+            feature[prefix + 'flux_q95'] = np.percentile(vals, 95) if len(vals) > 0 else 0.0
+            feature[prefix + 'flux_range'] = np.ptp(vals) if len(vals) > 0 else 0.0
+            feature[prefix + 'flux_peak_to_median'] = (np.max(vals)-np.median(vals)) if len(vals) > 0 else 0.0
+            feature[prefix + 'flux_median_to_min'] = (np.median(vals)-np.min(vals)) if len(vals) > 0 else 0.0
+            feature[prefix + 'flux_median_to_max'] = (np.max(vals)-np.median(vals)) if len(vals) > 0 else 0.0
+            feature[prefix + 'flux_p1'] = np.percentile(vals, 1) if len(vals) > 0 else 0.0
+            feature[prefix + 'flux_p99'] = np.percentile(vals, 99) if len(vals) > 0 else 0.0
+            # Clipped statistics
+            if len(vals) > 10:
+                clipped = vals[(vals > np.percentile(vals, 5)) & (vals < np.percentile(vals, 95))]
+                feature[prefix + 'flux_clipped_mean'] = np.mean(clipped) if len(clipped) > 0 else 0.0
+                feature[prefix + 'flux_clipped_std'] = np.std(clipped) if len(clipped) > 0 else 0.0
+                feature[prefix + 'flux_clipped_min'] = np.min(clipped) if len(clipped) > 0 else 0.0
+                feature[prefix + 'flux_clipped_max'] = np.max(clipped) if len(clipped) > 0 else 0.0
+                feature[prefix + 'flux_clipped_skew'] = pd.Series(clipped).skew() if len(clipped) > 2 else 0.0
+                feature[prefix + 'flux_clipped_kurtosis'] = pd.Series(clipped).kurtosis() if len(clipped) > 3 else 0.0
+            else:
+                feature[prefix + 'flux_clipped_mean'] = 0.0
+                feature[prefix + 'flux_clipped_std'] = 0.0
+                feature[prefix + 'flux_clipped_min'] = 0.0
+                feature[prefix + 'flux_clipped_max'] = 0.0
+                feature[prefix + 'flux_clipped_skew'] = 0.0
+                feature[prefix + 'flux_clipped_kurtosis'] = 0.0
 
-            # Helper to safely get stat, fallback 0 if nan/inf
+            # Rolling/windowed statistics (window=7,9,11)
+            for w in [7,9,11]:
+                if len(vals) >= w:
+                    roll = pd.Series(vals).rolling(w)
+                    feature[prefix + f'roll{w}_min'] = roll.min().mean()
+                    feature[prefix + f'roll{w}_max'] = roll.max().mean()
+                    feature[prefix + f'roll{w}_median'] = roll.median().mean()
+                    feature[prefix + f'roll{w}_std'] = roll.std().mean()
+                    # Robust lambdas for rolling.apply
+                    feature[prefix + f'roll{w}_mad'] = roll.apply(lambda x: np.median(np.abs(x-np.median(x))) if len(x) > 0 and np.all(np.isfinite(x)) else 0.0).mean()
+                    feature[prefix + f'roll{w}_iqr'] = roll.apply(lambda x: np.percentile(x,75)-np.percentile(x,25) if len(x) > 0 and np.all(np.isfinite(x)) else 0.0).mean()
+                    feature[prefix + f'roll{w}_range'] = roll.apply(lambda x: np.ptp(x) if len(x) > 0 and np.all(np.isfinite(x)) else 0.0).mean()
+                    try:
+                        zscore = (pd.Series(vals)-pd.Series(vals).mean())/(pd.Series(vals).std()+1e-8)
+                        feature[prefix + f'roll{w}_zscore_max'] = np.max(zscore) if np.all(np.isfinite(zscore)) else 0.0
+                    except Exception:
+                        feature[prefix + f'roll{w}_zscore_max'] = 0.0
+                else:
+                    feature[prefix + f'roll{w}_min'] = 0.0
+                    feature[prefix + f'roll{w}_max'] = 0.0
+                    feature[prefix + f'roll{w}_median'] = 0.0
+                    feature[prefix + f'roll{w}_std'] = 0.0
+                    feature[prefix + f'roll{w}_mad'] = 0.0
+                    feature[prefix + f'roll{w}_iqr'] = 0.0
+                    feature[prefix + f'roll{w}_range'] = 0.0
+                    feature[prefix + f'roll{w}_zscore_max'] = 0.0
+
+            # Biến đổi toán học mở rộng
+            feature[prefix + 'flux_log1p_mean'] = np.mean(np.log1p(np.abs(vals))) if len(vals) > 0 else 0.0
+            feature[prefix + 'flux_expm1_mean'] = np.mean(np.expm1(vals)) if len(vals) > 0 else 0.0
+            feature[prefix + 'flux_sinh_mean'] = np.mean(np.sinh(vals)) if len(vals) > 0 else 0.0
+            feature[prefix + 'flux_cosh_mean'] = np.mean(np.cosh(vals)) if len(vals) > 0 else 0.0
+            feature[prefix + 'flux_tanh_mean'] = np.mean(np.tanh(vals)) if len(vals) > 0 else 0.0
+            feature[prefix + 'flux_arctan_mean'] = np.mean(np.arctan(vals)) if len(vals) > 0 else 0.0
+            feature[prefix + 'flux_arcsin_mean'] = np.mean(np.arcsin(np.clip(vals/np.max(np.abs(vals)+1e-8),-1,1))) if len(vals) > 0 else 0.0
+            feature[prefix + 'flux_arccos_mean'] = np.mean(np.arccos(np.clip(vals/np.max(np.abs(vals)+1e-8),-1,1))) if len(vals) > 0 else 0.0
+            # Sinh tổng, tích, max/min, abs, sign, reciprocal, square, cube
+            feature[prefix + 'flux_abs_max'] = np.max(np.abs(vals)) if len(vals) > 0 else 0.0
+            feature[prefix + 'flux_sign_mean'] = np.mean(np.sign(vals)) if len(vals) > 0 else 0.0
+            feature[prefix + 'flux_reciprocal_max'] = np.max(1.0/(vals+1e-8)) if len(vals) > 0 else 0.0
+            feature[prefix + 'flux_square_max'] = np.max(vals**2) if len(vals) > 0 else 0.0
+            feature[prefix + 'flux_cube_max'] = np.max(vals**3) if len(vals) > 0 else 0.0
+
+            # Đặc trưng shape mở rộng
+            for thresh, label in zip([np.mean(vals), np.median(vals)], ['mean', 'median']):
+                if np.isfinite(thresh):
+                    feature[prefix + f'flux_n_above_{label}'] = np.sum(vals > thresh) if len(vals) > 0 else 0.0
+                    feature[prefix + f'flux_n_below_{label}'] = np.sum(vals < thresh) if len(vals) > 0 else 0.0
+                else:
+                    feature[prefix + f'flux_n_above_{label}'] = 0.0
+                    feature[prefix + f'flux_n_below_{label}'] = 0.0
+            if len(vals) > 1:
+                feature[prefix + 'flux_n_increase'] = np.sum(np.diff(vals) > 0)
+                feature[prefix + 'flux_n_decrease'] = np.sum(np.diff(vals) < 0)
+                feature[prefix + 'flux_n_sign_change'] = np.sum(np.diff(np.sign(vals)) != 0)
+            else:
+                feature[prefix + 'flux_n_increase'] = 0.0
+                feature[prefix + 'flux_n_decrease'] = 0.0
+                feature[prefix + 'flux_n_sign_change'] = 0.0
+
+            # Đặc trưng rolling tổ hợp giữa các band (window=5)
+            for other_band in obj['filter'].unique():
+                if other_band != band:
+                    other_vals = obj[obj['filter'] == other_band]['flux'].dropna().values
+                    oprefix = f'band_{band}_vs_{other_band}_'
+                    if len(vals) >= 5 and len(other_vals) >= 5:
+                        roll1 = pd.Series(vals).rolling(5).mean()
+                        roll2 = pd.Series(other_vals).rolling(5).mean()
+                        feature[oprefix + 'roll5_ratio_mean'] = np.nanmean(roll1/(roll2+1e-8))
+                        feature[oprefix + 'roll5_diff_mean'] = np.nanmean(roll1-roll2)
+                        feature[oprefix + 'roll5_sum_mean'] = np.nanmean(roll1+roll2)
+                        feature[oprefix + 'roll5_prod_mean'] = np.nanmean(roll1*roll2)
+                        feature[oprefix + 'roll5_norm_diff'] = np.nanmean((roll1-roll2)/(roll1+roll2+1e-8))
+                    else:
+                        feature[oprefix + 'roll5_ratio_mean'] = 0.0
+                        feature[oprefix + 'roll5_diff_mean'] = 0.0
+                        feature[oprefix + 'roll5_sum_mean'] = 0.0
+                        feature[oprefix + 'roll5_prod_mean'] = 0.0
+                        feature[oprefix + 'roll5_norm_diff'] = 0.0
+
+            # --- SPAM FEATURE BLOCK ---
+            # Thống kê cao hơn
+            feature[prefix + 'flux_entropy'] = -np.sum((vals/np.sum(vals+1e-8)) * np.log(vals/np.sum(vals+1e-8)+1e-8)) if len(vals) > 1 else 0.0
+            feature[prefix + 'flux_mad'] = np.median(np.abs(vals - np.median(vals))) if len(vals) > 1 else 0.0
+            feature[prefix + 'flux_iqr'] = np.percentile(vals, 75) - np.percentile(vals, 25) if len(vals) > 1 else 0.0
+            feature[prefix + 'flux_trimmed_mean'] = np.mean(np.sort(vals)[int(0.1*len(vals)):int(0.9*len(vals))]) if len(vals) > 10 else 0.0
+            feature[prefix + 'flux_robust_std'] = (np.percentile(vals, 84) - np.percentile(vals, 16))/2 if len(vals) > 1 else 0.0
+
+            # Rolling/windowed statistics (window=5)
+            if len(vals) >= 5:
+                roll = pd.Series(vals).rolling(5)
+                feature[prefix + 'roll_min'] = roll.min().mean()
+                feature[prefix + 'roll_max'] = roll.max().mean()
+                feature[prefix + 'roll_median'] = roll.median().mean()
+                feature[prefix + 'roll_std'] = roll.std().mean()
+                feature[prefix + 'roll_skew'] = roll.apply(lambda x: pd.Series(x).skew()).mean()
+                feature[prefix + 'roll_kurtosis'] = roll.apply(lambda x: pd.Series(x).kurtosis()).mean()
+            else:
+                feature[prefix + 'roll_min'] = 0.0
+                feature[prefix + 'roll_max'] = 0.0
+                feature[prefix + 'roll_median'] = 0.0
+                feature[prefix + 'roll_std'] = 0.0
+                feature[prefix + 'roll_skew'] = 0.0
+                feature[prefix + 'roll_kurtosis'] = 0.0
+
+            # Biến đổi toán học
+            feature[prefix + 'flux_log_mean'] = safe_log(np.abs(vals)+1e-8)
+            feature[prefix + 'flux_sqrt_mean'] = safe(lambda x: np.mean(np.sqrt(np.abs(x))), vals)
+            feature[prefix + 'flux_abs_sum'] = safe(lambda x: np.sum(np.abs(x)), vals)
+            feature[prefix + 'flux_sign_sum'] = safe(lambda x: np.sum(np.sign(x)), vals)
+            feature[prefix + 'flux_square_sum'] = safe(lambda x: np.sum(np.square(x)), vals)
+            feature[prefix + 'flux_cube_sum'] = safe(lambda x: np.sum(np.power(x,3)), vals)
+            feature[prefix + 'flux_exp_sum'] = safe(lambda x: np.sum(np.exp(np.clip(x, None, 20))), vals)
+            feature[prefix + 'flux_reciprocal_sum'] = safe(lambda x: np.sum(1.0/(x+1e-8)), vals)
+            # Z-score, minmax, robust scaler
+            if len(vals) > 1:
+                try:
+                    zscore = (vals-np.mean(vals))/(np.std(vals)+1e-8)
+                    feature[prefix + 'flux_zscore_max'] = safe(np.max, zscore)
+                except Exception:
+                    feature[prefix + 'flux_zscore_max'] = 0.0
+                try:
+                    feature[prefix + 'flux_minmax'] = (safe(np.max, vals)-safe(np.min, vals))/(safe(np.max, vals)+1e-8)
+                except Exception:
+                    feature[prefix + 'flux_minmax'] = 0.0
+                try:
+                    robust_denom = safe_percentile(vals, 84) - safe_percentile(vals, 16) + 1e-8
+                    feature[prefix + 'flux_robust_scaled_max'] = safe(np.max, (vals-np.median(vals))/robust_denom)
+                except Exception:
+                    feature[prefix + 'flux_robust_scaled_max'] = 0.0
+            else:
+                feature[prefix + 'flux_zscore_max'] = 0.0
+                feature[prefix + 'flux_minmax'] = 0.0
+                feature[prefix + 'flux_robust_scaled_max'] = 0.0
+
+            # Đặc trưng shape/biến thiên
+            feature[prefix + 'flux_plateau'] = safe(lambda x: np.mean(np.abs(np.diff(x, n=2))), vals)
+            feature[prefix + 'flux_rise_decay_ratio'] = safe(lambda x: (np.max(x)-np.median(x))/(np.median(x)-np.min(x)+1e-8), vals)
+            feature[prefix + 'flux_duration_above_halfmax'] = safe(lambda x: np.sum(x > (np.max(x)/2)), vals)
+            feature[prefix + 'flux_time_to_halfmax'] = safe(lambda x: np.argmax(x > (np.max(x)/2)), vals)
+
+            # Đặc trưng biến thiên
+            feature[prefix + 'amplitude'] = safe(lambda x: np.max(x) - np.min(x), vals)
+            feature[prefix + 'variability'] = safe(np.var, vals)
+            feature[prefix + 'log_variability'] = safe_log([np.var(vals)+1e-8])
+
+            # FFT features
+            if len(vals) > 4:
+                try:
+                    fft = np.fft.fft(vals)
+                    fft_power = np.abs(fft)**2
+                    feature[prefix + 'fft_power_max'] = safe(np.max, fft_power)
+                    feature[prefix + 'fft_power_sum'] = safe(np.sum, fft_power)
+                    feature[prefix + 'fft_power_mean'] = safe(np.mean, fft_power)
+                    feature[prefix + 'dominant_freq'] = safe(lambda x: np.argmax(x[1:]) + 1, fft_power)
+                except Exception:
+                    feature[prefix + 'fft_power_max'] = 0.0
+                    feature[prefix + 'fft_power_sum'] = 0.0
+                    feature[prefix + 'fft_power_mean'] = 0.0
+                    feature[prefix + 'dominant_freq'] = 0.0
+            else:
+                feature[prefix + 'fft_power_max'] = 0.0
+                feature[prefix + 'fft_power_sum'] = 0.0
+                feature[prefix + 'fft_power_mean'] = 0.0
+                feature[prefix + 'dominant_freq'] = 0.0
+
+            # Tổ hợp giữa các band (ratio, diff, sum, product với band phổ biến)
+            for other_band in obj['filter'].unique():
+                if other_band != band:
+                    other_vals = obj[obj['filter'] == other_band]['flux'].dropna().values
+                    oprefix = f'band_{band}_vs_{other_band}_'
+                    if len(vals) > 0 and len(other_vals) > 0:
+                        feature[oprefix + 'flux_ratio_mean'] = np.mean(vals) / (np.mean(other_vals)+1e-8)
+                        feature[oprefix + 'flux_diff_mean'] = np.mean(vals) - np.mean(other_vals)
+                        feature[oprefix + 'flux_sum_mean'] = np.mean(vals) + np.mean(other_vals)
+                        feature[oprefix + 'flux_prod_mean'] = np.mean(vals) * np.mean(other_vals)
+                        feature[oprefix + 'flux_norm_diff'] = (np.mean(vals) - np.mean(other_vals)) / (np.mean(vals) + np.mean(other_vals) + 1e-8)
+                    else:
+                        feature[oprefix + 'flux_ratio_mean'] = 0.0
+                        feature[oprefix + 'flux_diff_mean'] = 0.0
+                        feature[oprefix + 'flux_sum_mean'] = 0.0
+                        feature[oprefix + 'flux_prod_mean'] = 0.0
+                        feature[oprefix + 'flux_norm_diff'] = 0.0
+
             def safe_stat(func, arr, default=0.0):
                 try:
                     val = func(arr)
@@ -250,7 +615,7 @@ def extract_features(df):
 
             # Percentile features
             for q in [10, 25, 75, 90]:
-                feature[f'{prefix}flux_p{q}'] = np.percentile(vals, q) if len(vals) > 0 else 0.0
+                feature[f'{prefix}flux_p{q}'] = safe_percentile(vals, q)
 
             # Color at peak và color evolution (g-r, r-i, g-i)
             # Chỉ tính nếu có đủ các band phổ biến
