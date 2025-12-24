@@ -28,15 +28,17 @@
 
 Các nhóm đặc trưng chính được xây dựng cho mỗi object (và cho từng band: u, g, r, i, z, y):
 
-- Nhóm đặc trưng thống kê cơ bản: mean, std, max, min, median, skew, kurtosis, peak-to-peak, autocorr, count, outlier_count, zero_crossings, n_peaks, n_troughs, fwhm, asymmetry,...
-
-- Nhóm đặc trưng rolling/window: rolling mean, rolling std, rolling min/max, rolling median, rolling peak/trough, rolling zscore, rolling iqr, rolling mad, rolling range,... với nhiều window size khác nhau (5, 7, 9, 11)
+- Nhóm đặc trưng thống kê cơ bản: mean, std, max, min, median, count, outlier_count, n_peaks, n_troughs, fwhm, asymmetry,...
 
 - Nhóm đặc trưng peak/trough: peak_time, peak_separation, double_peak, peak/trough count, peak/trough value, rise_time, decay_rate, decay_powerlaw_alpha,...
 
-- Nhóm đặc trưng phổ/tần số: fft_power_max, fft_power_sum, fft_power_mean, dominant_freq, log_variability, variability, amplitude, slope
+- Nhóm đặc trưng màu sắc và tỷ lệ: color_g_r_at_peak, color_r_i_at_peak, color_g_i_at_peak, color_gr_slope, color_gr_stability, color_ri_stability, color_gi_stability, ratio_r_g_flux_max, ratio_i_r_flux_mean, ratio_r_i_flux_median, các ratio/diff/sum/prod giữa các band (vd: band_r_vs_g_flux_sum_mean,...)
 
-- Nhóm đặc trưng màu sắc và tỷ lệ: color_g_r_at_peak, color_r_i_at_peak, color_g_i_at_peak, color_gr_slope, color_gr_stability, color_ri_stability, color_gi_stability, color_u_minus_g_mean, color_change_rate_u_g, blue_fraction, ratio_r_g_flux_max, ratio_i_r_flux_mean, ratio_r_i_flux_median, các ratio/diff/sum/prod giữa các band (vd: band_r_vs_g_flux_sum_mean, band_z_vs_y_roll5_ratio_mean,...)
+Nhóm các đặc trưng dưới sau khi thử nghiệm không có đóng góp nhiều cho mô hình
+
+- Nhóm đặc trưng rolling/window: rolling mean, rolling std, rolling min/max, rolling median, rolling peak/trough, rolling zscore, rolling iqr, rolling mad, rolling range,... với nhiều window size khác nhau (5, 7, 9, 11)
+
+- Nhóm đặc trưng phổ/tần số: fft_power_max, fft_power_sum, fft_power_mean, dominant_freq, log_variability, variability, amplitude, slope
 
 - Nhóm đặc trưng vật lý/fit: max*luminosity_band*_, mean*luminosity_band*_, min*abs_mag_band*_, mean*abs_mag_band*_, fit*error_powerlaw_band*\*, dist_to_galaxy_center
 
