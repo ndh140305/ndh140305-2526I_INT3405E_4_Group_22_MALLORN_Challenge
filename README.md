@@ -40,7 +40,7 @@ Nhóm các đặc trưng dưới sau khi thử nghiệm không có đóng góp n
 
 - Nhóm đặc trưng phổ/tần số: fft_power_max, fft_power_sum, fft_power_mean, dominant_freq, log_variability, variability, amplitude, slope
 
-- Nhóm đặc trưng vật lý/fit: max*luminosity_band*_, mean*luminosity_band*_, min*abs_mag_band*_, mean*abs_mag_band*_, fit*error_powerlaw_band*\*, dist_to_galaxy_center
+- Nhóm đặc trưng vật lý/fit: max*luminosity_band*_, mean*luminosity_band*_, min*abs_mag_band*_, mean*abs_mag_band*_, fit*error_powerlaw_band*\
 
 - Nhóm đặc trưng entropy, robust, clipped: entropy, mad, iqr, trimmed_mean, robust_std, clipped_mean, clipped_std, clipped_min/max/skew/kurtosis,...
 
